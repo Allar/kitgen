@@ -1,0 +1,30 @@
+version: '2'
+
+tasks:
+
+    clean-service:
+        cmds:
+            - rm -rf {{if .name}}{{.name}}{{end}}
+
+    rebuild-service:
+        cmds:
+            - task clean-service {{if .name}}name={{.name}}{{end}}
+            - task service {{if .name}}name={{.name}}{{end}}
+
+    service:
+        deps: [assets]
+        cmds:
+            - go run . service {{if .name}}--name {{.name}} {{end}}
+    
+    run:
+        deps: [assets]
+        cmds:
+            - go run . {{if .args}}{{.args}}{{end}}
+    
+    assets:
+        cmds:
+            - resources -declare -var=FS -package=assets -output=assets/assets.go assets/files
+        sources:
+            - assets/files/**/*.tmpl
+        generates:
+            - assets/assets.go

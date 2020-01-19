@@ -1,0 +1,34 @@
+package service
+
+import (
+    "context"
+)
+
+// {{.Name}} describes the service interface
+type {{.Name}}Service interface {
+    // Add your methods here
+	// e.x: Foo(ctx context.Context,s string)(rs string, err error)
+    Foo(ctx context.Context,s string)(rs string, err error)
+    Bar(ctx context.Context,s string)(rs string, err error)
+}
+
+/*
+func (s *implemented{{.Name}}Service) FuncTemplate(ctx context.Context) (e0 error) {
+    // TODO implement the business logic of FuncTemplate
+    return e0
+}
+*/
+
+// NewImplemented{{.Name}}Service returns a naitve, stateless implementation
+func NewImplemented{{.Name}}Service() {{.Name}}Service {
+    return &implemented{{.Name}}Service{}
+}
+
+// New returns a {{.Name}}Service with all of the expected middleware wired in
+func New(middleware []Middleware) {{.Name}}Service {
+    var svc = NewImplemented{{.Name}}Service()
+    for _, m := range middleware {
+        svc = m(svc)
+    }
+    return svc
+}
