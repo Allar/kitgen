@@ -2,13 +2,14 @@ package kitgen
 
 import (
 	"fmt"
-	"text/template"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"text/template"
 
 	"github.com/allar/kitgen/assets"
 	"github.com/allar/source"
@@ -44,8 +45,16 @@ func createPath(pathName string) error {
 	}
 }
 
-type ServiceMethod struct {
+type MethodParameter struct {
 	Name string
+	Type string
+}
+
+type ServiceMethod struct {
+	Name              string
+	Parameters        []MethodParameter
+	Results           []MethodParameter
+	HasImplementation bool
 }
 
 type ServiceConfig struct {
@@ -72,8 +81,21 @@ func (sc ServiceConfig) sanitize() ServiceConfig {
 	}
 
 	sc.TemplateFuncs = template.FuncMap{
-		"lower":             strings.ToLower,
-		"serviceMethodList": serviceMethodList,
+		"lower":                      strings.ToLower,
+		"title":                      strings.Title,
+		"serviceMethodList":          serviceMethodList,
+		"serviceMethodInvokeArgList": serviceMethodInvokeArgList,
+		"serviceMethodResultList":    serviceMethodResultList,
+		"separator": func(s string) func() string {
+			i := -1
+			return func() string {
+				i++
+				if i == 0 {
+					return ""
+				}
+				return s
+			}
+		},
 	}
 
 	return sc
@@ -89,6 +111,29 @@ func serviceMethodList(sc ServiceConfig) string {
 		names = append(names, "\""+n.Name+"\"")
 	}
 	return strings.Join(names, ", ")
+}
+
+func serviceMethodInvokeArgList(sm ServiceMethod, argPrefix string) string {
+	var invokeArgString string
+	for _, p := range sm.Parameters {
+		actualPrefix := argPrefix
+		varName := p.Name
+		if p.Name == "ctx" {
+			actualPrefix = ""
+		} else {
+			varName = strings.Title(varName)
+		}
+		invokeArgString = invokeArgString + actualPrefix + varName + ", "
+	}
+	return strings.TrimRight(invokeArgString, ", ")
+}
+
+func serviceMethodResultList(sm ServiceMethod) string {
+	var resultListString string
+	for _, p := range sm.Results {
+		resultListString = resultListString + p.Name + ", "
+	}
+	return strings.TrimRight(resultListString, ", ")
 }
 
 func BuildServiceConfigFromPath(path string) ServiceConfig {
@@ -116,8 +161,53 @@ func BuildServiceConfigFromPath(path string) ServiceConfig {
 
 	methods := serviceInterface.Methods()
 	for _, m := range methods {
+
+		methodParams := []MethodParameter{}
+
+		params := m.Params()
+		for i, p := range params {
+			if i == 0 {
+				if p.Name != "ctx" || p.Type.String() != "context.Context" {
+					log.Fatalf("service interface method's [%s] first parameter should be \"ctx context.Context\", got [%s %s]", m.Name(), p.Name, p.Type.String())
+				}
+			}
+			methodParams = append(methodParams, MethodParameter{
+				Name: p.Name,
+				Type: p.Type.String(),
+			})
+		}
+
+		methodResults := []MethodParameter{}
+		results := m.Results()
+		for i, r := range results {
+			if i == len(results)-1 {
+				if r.Name != "err" || r.Type.String() != "error" {
+					log.Fatalf("service interface method's [%s] last return result should be \"err Error\", got [%s %s]", m.Name(), r.Name, r.Type.String())
+				}
+			}
+			methodResults = append(methodResults, MethodParameter{
+				Name: r.Name,
+				Type: r.Type.String(),
+			})
+		}
+
+		serviceMethodImplementationFound := false
+		serviceFunc, _ := serviceSource.GetFunction(m.Name())
+
+		if serviceFunc != nil {
+			matchingName := serviceFunc.Name() == m.Name()
+			matchingParams := reflect.DeepEqual(serviceFunc.Params(), params)
+			matchingResults := reflect.DeepEqual(serviceFunc.Results(), results)
+
+			serviceMethodImplementationFound = matchingName && matchingParams && matchingResults
+			//log.Printf("func is implemented: [%v], matchingName: [%v], matchingParams: [%v], matchingResults: [%v]", serviceMethodImplementationFound, matchingName, matchingParams, matchingResults)
+		}
+
 		sc.Methods = append(sc.Methods, ServiceMethod{
-			Name: m.Name(),
+			Name:              m.Name(),
+			Parameters:        methodParams,
+			Results:           methodResults,
+			HasImplementation: serviceMethodImplementationFound,
 		})
 	}
 
@@ -144,7 +234,12 @@ func CompileTemplateToFile(templatePath string, outputFilePath string, serviceCo
 		return nil
 	}
 
-	log.Printf("compiling template [%s]", templatePath)
+	if !serviceConfig.IsNewService && strings.Contains(templatePath, "/service/service.go.tmpl") {
+		log.Printf("skipping service template")
+		return nil
+	}
+
+	log.Printf("compiling template [%s]\n", templatePath)
 
 	data, ok := assets.FS.String(templatePath)
 	if !ok {

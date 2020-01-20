@@ -10,13 +10,13 @@ import (
 	"syscall"
 
     endpoint "{{.RepoPath}}/{{lower .Name}}/endpoint"
-	endpoint1 "github.com/go-kit/kit/endpoint"
+	kitendpoint "github.com/go-kit/kit/endpoint"
 	nethttp "net/http"
 	{{lower .Name}}http "{{.RepoPath}}/{{lower .Name}}/http"
 	promhttp "github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/go-kit/kit/log"
 	opentracing "github.com/go-kit/kit/tracing/opentracing"
-	http "github.com/go-kit/kit/transport/http"
+	transporthttp "github.com/go-kit/kit/transport/http"
 	group "github.com/oklog/oklog/pkg/group"
 	opentracinggo "github.com/opentracing/opentracing-go"
 	service "{{.RepoPath}}/{{lower .Name}}/service"
@@ -80,8 +80,8 @@ func getServiceMiddleware(logger log.Logger) (mw []service.Middleware) {
 
 	return
 }
-func getEndpointMiddleware(logger log.Logger) (mw map[string][]endpoint1.Middleware) {
-	mw = map[string][]endpoint1.Middleware{}
+func getEndpointMiddleware(logger log.Logger) (mw map[string][]kitendpoint.Middleware) {
+	mw = map[string][]kitendpoint.Middleware{}
 	// Add you endpoint middleware here
 	//@TODO: add kitgen support 
 
@@ -123,15 +123,15 @@ func createService(endpoints endpoint.Endpoints) (g *group.Group) {
 	initHttpHandler(endpoints, g)
 	return g
 }
-func defaultHttpOptions(logger log.Logger, tracer opentracinggo.Tracer) map[string][]http.ServerOption {
-	options := map[string][]http.ServerOption{
+func defaultHttpOptions(logger log.Logger, tracer opentracinggo.Tracer) map[string][]transporthttp.ServerOption {
+	options := map[string][]transporthttp.ServerOption{
     {{- range .Methods}}
-        "{{.Name}}": {http.ServerErrorEncoder({{lower $.Name}}http.ErrorEncoder), http.ServerErrorLogger(logger), http.ServerBefore(opentracing.HTTPToContext(tracer, "{{.Name}}", logger))},
+        "{{.Name}}": {transporthttp.ServerErrorEncoder({{lower $.Name}}http.ErrorEncoder), transporthttp.ServerErrorLogger(logger), transporthttp.ServerBefore(opentracing.HTTPToContext(tracer, "{{.Name}}", logger))},
     {{- end}}
 	}
 	return options
 }
-func addEndpointMiddlewareToAllMethods(mw map[string][]endpoint1.Middleware, m endpoint1.Middleware) {
+func addEndpointMiddlewareToAllMethods(mw map[string][]kitendpoint.Middleware, m kitendpoint.Middleware) {
 	methods := []string{ {{- serviceMethodList . -}} }
 	for _, v := range methods {
 		mw[v] = append(mw[v], m)
