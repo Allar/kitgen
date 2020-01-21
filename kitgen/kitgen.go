@@ -81,11 +81,12 @@ func (sc ServiceConfig) sanitize() ServiceConfig {
 	}
 
 	sc.TemplateFuncs = template.FuncMap{
-		"lower":                      strings.ToLower,
-		"title":                      strings.Title,
-		"serviceMethodList":          serviceMethodList,
-		"serviceMethodInvokeArgList": serviceMethodInvokeArgList,
-		"serviceMethodResultList":    serviceMethodResultList,
+		"lower":                       strings.ToLower,
+		"title":                       strings.Title,
+		"serviceMethodList":           serviceMethodList,
+		"serviceMethodInvokeArgList":  serviceMethodInvokeArgList,
+		"serviceMethodResultList":     serviceMethodResultList,
+		"serviceMethodBuildLogParams": serviceMethodBuildLogParams,
 		"separator": func(s string) func() string {
 			i := -1
 			return func() string {
@@ -130,10 +131,27 @@ func serviceMethodInvokeArgList(sm ServiceMethod, argPrefix string) string {
 
 func serviceMethodResultList(sm ServiceMethod) string {
 	var resultListString string
-	for _, p := range sm.Results {
-		resultListString = resultListString + p.Name + ", "
+	for _, r := range sm.Results {
+		resultListString = resultListString + r.Name + ", "
 	}
 	return strings.TrimRight(resultListString, ", ")
+}
+
+func serviceMethodBuildLogParams(sm ServiceMethod) string {
+	var resultLogString string
+
+	for _, p := range sm.Parameters {
+		if p.Name == "ctx" {
+			continue
+		}
+		resultLogString = resultLogString + "\"" + strings.ToLower(p.Name) + "\", " + strings.ToLower(p.Name) + ", "
+	}
+
+	for _, r := range sm.Results {
+		resultLogString = resultLogString + "\"" + strings.ToLower(r.Name) + "\", " + strings.ToLower(r.Name) + ", "
+	}
+
+	return strings.TrimRight(resultLogString, ", ")
 }
 
 func BuildServiceConfigFromPath(path string) ServiceConfig {

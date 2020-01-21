@@ -8,21 +8,35 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"context"
+
+	level "github.com/go-kit/kit/log/level"
 
     endpoint "{{.RepoPath}}/{{lower .Name}}/endpoint"
 	kitendpoint "github.com/go-kit/kit/endpoint"
+
 	nethttp "net/http"
 	{{lower .Name}}http "{{.RepoPath}}/{{lower .Name}}/http"
-	promhttp "github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/go-kit/kit/log"
-	opentracing "github.com/go-kit/kit/tracing/opentracing"
 	transporthttp "github.com/go-kit/kit/transport/http"
+
+	promhttp "github.com/prometheus/client_golang/prometheus/promhttp"
+	kitprometheus "github.com/go-kit/kit/metrics/prometheus"
+	prometheus "github.com/prometheus/client_golang/prometheus"
+
+	stdlog "log"
+	log "github.com/go-kit/kit/log"
+
 	group "github.com/oklog/oklog/pkg/group"
-	opentracinggo "github.com/opentracing/opentracing-go"
+
+	zipkin "github.com/openzipkin/zipkin-go"
+	zipkinhttp "github.com/openzipkin/zipkin-go/middleware/http"
+	zipkinreporter "github.com/openzipkin/zipkin-go/reporter"
+	zipkinreporterlog "github.com/openzipkin/zipkin-go/reporter/log"
+	zipkinreporterhttp "github.com/openzipkin/zipkin-go/reporter/http"
+
 	service "{{.RepoPath}}/{{lower .Name}}/service"
 )
 
-var tracer opentracinggo.Tracer
 var logger log.Logger
 
 // Define our flags. Your service probably won't need to bind listeners for
@@ -41,40 +55,116 @@ func Run() {
 	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
 	logger = log.With(logger, "caller", log.DefaultCaller)
 
-	//  Determine which tracer to use. We'll pass the tracer to all the
-	// components that use it, as a dependency
+	stdlogger := stdlog.New(os.Stderr, "", stdlog.LstdFlags)
+	stdlogger.SetOutput(log.NewStdlibAdapter(logger))
 
-	logger.Log("tracer", "none")
-	tracer = opentracinggo.GlobalTracer()
+	// Set up zipkin tracer
+	level.Info(logger).Log("tracer", "Zipkin", "URL", *zipkinURL)
+	var (
+		hostPort      = "" // if host:port is unknown we can keep this empty
+		serviceName   = "{{lower .Name}}"
+		useNoopTracer = (*zipkinURL == "")
+	)
+	var reporter zipkinreporter.Reporter
+	if *zipkinURL == "" {
+		reporter = zipkinreporterlog.NewReporter(stdlogger)
+		defer reporter.Close()
+	} else {
+		reporter = zipkinreporterhttp.NewReporter(*zipkinURL)
+		defer reporter.Close()
+	}
 
+	zEP, err := zipkin.NewEndpoint(serviceName, hostPort)
+	if err != nil {
+		stdlogger.Fatalf("unable to create local endpoint: %+v\n", err)
+	}
+
+	tracer, err := zipkin.NewTracer(reporter,
+		zipkin.WithLocalEndpoint(zEP),
+		zipkin.WithNoopTracer(useNoopTracer),
+	)
+	if err != nil {
+		level.Error(logger).Log("err", "unable to create zipkin tracer: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	tags := map[string]string{
+		"component": "{{.Name}}",
+	}
+
+	// create global zipkin http server middleware
+	zipkinServerMiddleware := zipkinhttp.NewServerMiddleware(
+		tracer,
+		zipkinhttp.TagResponseSize(true),
+		zipkinhttp.ServerTags(tags),
+	)
+
+	// start service initialization
 	svc := service.New(getServiceMiddleware(logger))
 	eps := endpoint.New(svc, getEndpointMiddleware(logger))
-	g := createService(eps)
-	initMetricsEndpoint(g)
-	initCancelInterrupt(g)
-	logger.Log("exit", g.Run())
 
-}
-func initHttpHandler(endpoints endpoint.Endpoints, g *group.Group) {
-	options := defaultHttpOptions(logger, tracer)
+	g := &group.Group{}
+
+	// set up http handler
+	httpOptions := defaultHttpOptions(logger)
 	// Add your http options here
-	// @TODO: add kitgen support 
+	// @TODO: add kitgen support
 
-	httpHandler := {{lower .Name}}http.NewHTTPHandler(endpoints, options)
+	httpHandler := {{lower .Name}}http.NewHTTPHandler(eps, httpOptions)
+	httpHandler = zipkinServerMiddleware(httpHandler)
+	// Add your http handler middleware here
+	// @TODO: add kitgen support
+
+	// start up our http tcp socket
 	httpListener, err := net.Listen("tcp", *httpAddr)
 	if err != nil {
 		logger.Log("transport", "HTTP", "during", "Listen", "err", err)
 	}
+
+	// add serving our handlers over the http socket to our function group
 	g.Add(func() error {
-		logger.Log("transport", "HTTP", "addr", *httpAddr)
+		level.Info(logger).Log("transport", "HTTP", "addr", *httpAddr)
 		return nethttp.Serve(httpListener, httpHandler)
 	}, func(error) {
 		httpListener.Close()
-	})
+	}) 
 
+	// spin up metrics http port
+	initMetricsEndpoint(g)
+
+	// spin up os interrupt channel
+	initCancelInterrupt(g)
+
+	// run our group, when group is done log exit
+	logger.Log("exit", g.Run())
 }
+func zipkinToContext(methodName string) transporthttp.RequestFunc {
+	return func(ctx context.Context, r *nethttp.Request) context.Context {
+		// retrieve span from context (created by zipkin server middleware)
+		span := zipkin.SpanFromContext(ctx)
+		span.SetName(methodName)
+		defer span.Finish()
+
+		return ctx
+	}
+}
+func defaultHttpOptions(logger log.Logger) map[string][]transporthttp.ServerOption {
+	options := map[string][]transporthttp.ServerOption{
+    {{- range .Methods}}
+        "{{.Name}}": {
+			transporthttp.ServerErrorEncoder({{lower $.Name}}http.ErrorEncoder),
+			transporthttp.ServerErrorLogger(level.Error(log.With(logger, "method", "{{.Name}}", "msg", "http server error"))),
+			transporthttp.ServerBefore(zipkinToContext("{{.Name}}")),
+		},
+    {{- end}}
+	}
+	return options
+}
+
 func getServiceMiddleware(logger log.Logger) (mw []service.Middleware) {
 	mw = []service.Middleware{}
+	mw = append(mw, service.LoggingMiddleware(logger))
+	//mw = append(mw, service.TracingMiddleware())
 	// Append your middleware here
 	//@TODO: add kitgen support 
 
@@ -82,6 +172,22 @@ func getServiceMiddleware(logger log.Logger) (mw []service.Middleware) {
 }
 func getEndpointMiddleware(logger log.Logger) (mw map[string][]kitendpoint.Middleware) {
 	mw = map[string][]kitendpoint.Middleware{}
+
+	// set up prometheus
+	duration := kitprometheus.NewSummaryFrom(prometheus.SummaryOpts{
+		Help:      "Request duration in seconds.",
+		Name:      "request_duration_seconds",
+		Namespace: "example",
+		Subsystem: "dopeuser",
+	}, []string{"method", "success"})
+
+	// Set up endpoint middleware
+	{{- range .Methods }}
+	mw["{{.Name}}"] = []kitendpoint.Middleware{
+		endpoint.LoggingMiddleware(log.With(logger, "method", "{{.Name}}")),
+		endpoint.InstrumentingMiddleware(duration.With("method", "{{.Name}}")),
+	}
+	{{- end }}
 	// Add you endpoint middleware here
 	//@TODO: add kitgen support 
 
@@ -91,10 +197,10 @@ func initMetricsEndpoint(g *group.Group) {
 	nethttp.DefaultServeMux.Handle("/metrics", promhttp.Handler())
 	debugListener, err := net.Listen("tcp", *debugAddr)
 	if err != nil {
-		logger.Log("transport", "debug/HTTP", "during", "Listen", "err", err)
+		level.Error(logger).Log("transport", "debug/HTTP", "during", "Listen", "err", err)
 	}
 	g.Add(func() error {
-		logger.Log("transport", "debug/HTTP", "addr", *debugAddr)
+		level.Info(logger).Log("transport", "debug/HTTP", "addr", *debugAddr)
 		return nethttp.Serve(debugListener, nethttp.DefaultServeMux)
 	}, func(error) {
 		debugListener.Close()
@@ -114,26 +220,4 @@ func initCancelInterrupt(g *group.Group) {
 	}, func(error) {
 		close(cancelInterrupt)
 	})
-}
-
-/////////////////////////////////////////
-
-func createService(endpoints endpoint.Endpoints) (g *group.Group) {
-	g = &group.Group{}
-	initHttpHandler(endpoints, g)
-	return g
-}
-func defaultHttpOptions(logger log.Logger, tracer opentracinggo.Tracer) map[string][]transporthttp.ServerOption {
-	options := map[string][]transporthttp.ServerOption{
-    {{- range .Methods}}
-        "{{.Name}}": {transporthttp.ServerErrorEncoder({{lower $.Name}}http.ErrorEncoder), transporthttp.ServerErrorLogger(logger), transporthttp.ServerBefore(opentracing.HTTPToContext(tracer, "{{.Name}}", logger))},
-    {{- end}}
-	}
-	return options
-}
-func addEndpointMiddlewareToAllMethods(mw map[string][]kitendpoint.Middleware, m kitendpoint.Middleware) {
-	methods := []string{ {{- serviceMethodList . -}} }
-	for _, v := range methods {
-		mw[v] = append(mw[v], m)
-	}
 }

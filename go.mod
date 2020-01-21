@@ -10,6 +10,8 @@ require (
 	github.com/go-kit/kit v0.8.0
 	github.com/go-task/task v2.2.0+incompatible // indirect
 	github.com/google/uuid v1.1.1 // indirect
+	github.com/gorilla/handlers v1.4.2
+	github.com/gorilla/mux v1.7.3
 	github.com/huandu/xstrings v1.3.0 // indirect
 	github.com/imdario/mergo v0.3.8 // indirect
 	github.com/mattn/go-zglob v0.0.1 // indirect
@@ -19,6 +21,7 @@ require (
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/omeid/go-resources v0.0.0-20200113210624-eb442c910d63
 	github.com/opentracing/opentracing-go v1.1.0
+	github.com/openzipkin/zipkin-go v0.2.2
 	github.com/pelletier/go-toml v1.6.0 // indirect
 	github.com/prometheus/client_golang v0.9.3
 	github.com/radovskyb/watcher v1.0.7 // indirect

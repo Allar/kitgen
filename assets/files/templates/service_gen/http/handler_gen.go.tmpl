@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	endpoint "{{.RepoPath}}/{{lower .Name}}/endpoint"
 	transporthttp "github.com/go-kit/kit/transport/http"
 	nethttp "net/http"
+	handlers "github.com/gorilla/handlers"
+	mux "github.com/gorilla/mux"
 )
 
 // NewHTTPHandler returns a handler that makes a set of endpoints available on
 // predefined paths.
 func NewHTTPHandler(endpoints endpoint.Endpoints, options map[string][]transporthttp.ServerOption) nethttp.Handler {
-	m := nethttp.NewServeMux()
+	m := mux.NewRouter()
     {{- range .Methods}}
 	make{{.Name}}Handler(m, endpoints, options["{{.Name}}"])
     {{- end}}
@@ -33,6 +36,9 @@ func ErrorDecoder(r *nethttp.Response) error {
 // This is used to set the http status, see an example here :
 // https://github.com/go-kit/kit/blob/master/examples/addsvc/pkg/addtransport/http.go#L133
 func err2code(err error) int {
+	if err == io.EOF {
+		return nethttp.StatusUnprocessableEntity
+	}
 	return nethttp.StatusInternalServerError
 }
 
@@ -43,8 +49,8 @@ type errorWrapper struct {
 // HTTP Handler logic for {{.Name}}
 
 // make{{.Name}}Handler creates the handler logic for {{.Name}}
-func make{{.Name}}Handler(m *nethttp.ServeMux, endpoints endpoint.Endpoints, options []transporthttp.ServerOption) {
-	m.Handle("/{{lower .Name}}", transporthttp.NewServer(endpoints.{{.Name}}Endpoint, decode{{.Name}}Request, encode{{.Name}}Response, options...))
+func make{{.Name}}Handler(m *mux.Router, endpoints endpoint.Endpoints, options []transporthttp.ServerOption) {
+	m.Methods("POST").Path("/{{lower .Name}}").Handler(handlers.CORS(handlers.AllowedMethods([]string{"POST"}), handlers.AllowedOrigins([]string{"*"}))(transporthttp.NewServer(endpoints.{{.Name}}Endpoint, decode{{.Name}}Request, encode{{.Name}}Response, options...)))
 }
 
 // decode{{.Name}}Request is a transport/http.DecodeRequestFunc that decodes a
